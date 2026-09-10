@@ -61,7 +61,7 @@ if (
         color="Tipo de establecimiento",
         title="Personas censadas por ministerio y tipo de establecimiento",
     )
-    st.plotly_chart(fig_resumen, width="stretch")
+    st.plotly_chart(fig_resumen, width="stretch", key="grafico_resumen_ministerio")
 
 cols_select = columnas_categoricas(df)
 cols_input = columnas_texto_libre(df)
@@ -100,7 +100,7 @@ with col_izq:
     conteo1 = df_filtrado[dim1].value_counts().reset_index()
     conteo1.columns = [dim1, "cantidad"]
     fig1 = px.pie(conteo1, names=dim1, values="cantidad", title=f"Por {dim1}")
-    st.plotly_chart(fig1, width="stretch")
+    st.plotly_chart(fig1, width="stretch", key="grafico_dim1")
 
 with col_der:
     dim2 = st.selectbox(
@@ -112,7 +112,7 @@ with col_der:
     conteo2 = df_filtrado[dim2].value_counts().reset_index()
     conteo2.columns = [dim2, "cantidad"]
     fig2 = px.pie(conteo2, names=dim2, values="cantidad", title=f"Por {dim2}")
-    st.plotly_chart(fig2, width="stretch")
+    st.plotly_chart(fig2, width="stretch", key="grafico_dim2")
 
 visibles = [c for c in df_filtrado.columns if not es_pii(c)]
 st.subheader("Tabla de datos filtrados")
