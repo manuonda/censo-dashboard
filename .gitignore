@@ -1,0 +1,11 @@
+.env
+*.pyc
+*.xls
+*.xlsx
+*.csv
+__pycache__/
+.streamlit/
+.venv/
+.venvv/
+.agents/skills/developing-with-streamlit
+.claude/skills/developing-with-streamlit
