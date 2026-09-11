@@ -9,11 +9,31 @@ from datos import (
     es_pii,
     normalizar_columnas,
     opciones_unicas,
+    rellenar_sin_dato,
     resumen_por_ministerio,
+    sanear_tipos_mixtos,
 )
 
 COLUMNA_INSTITUCION_RESPUESTAS = "Nombre de la institucion2"
 HOJA_ESTABLECIMIENTOS = "Establecimientos"
+# Orden del filtro en cascada: cada select acota las opciones del siguiente.
+COLUMNAS_CASCADA_ESTABLECIMIENTO = [
+    ("Institucion", "Institución"),
+    ("Sector", "Sector"),
+    ("Tipo de establecimiento", "Tipo de establecimiento"),
+    ("Establecimiento", "Establecimiento"),
+]
+
+
+def _sincronizar_seleccion(key: str, opciones_validas: list) -> None:
+    """Antes de crear el widget, saca del session_state los valores que ya
+    no están entre las opciones (por haber cambiado un filtro anterior en la
+    cascada, o por un "Completar todos" con opciones de otro alcance). Sin
+    esto, Streamlit tira error porque el valor guardado ya no pertenece a
+    las opciones nuevas."""
+    if key in st.session_state:
+        st.session_state[key] = [v for v in st.session_state[key] if v in opciones_validas]
+
 
 st.set_page_config(page_title="Censo - Visualización", layout="wide")
 
@@ -35,16 +55,18 @@ hoja = (
 if len(xl.sheet_names) == 1:
     st.caption(f"Pestaña: {hoja}")
 
-df = normalizar_columnas(pd.read_excel(xl, sheet_name=hoja))
+df = sanear_tipos_mixtos(normalizar_columnas(pd.read_excel(xl, sheet_name=hoja)))
 st.success(f"Se cargaron {len(df)} filas.")
 
-if (
+hay_establecimientos = (
     HOJA_ESTABLECIMIENTOS in xl.sheet_names
     and hoja != HOJA_ESTABLECIMIENTOS
     and COLUMNA_INSTITUCION_RESPUESTAS in df.columns
-):
-    df_establecimientos = normalizar_columnas(
-        pd.read_excel(xl, sheet_name=HOJA_ESTABLECIMIENTOS)
+)
+
+if hay_establecimientos:
+    df_establecimientos = sanear_tipos_mixtos(
+        normalizar_columnas(pd.read_excel(xl, sheet_name=HOJA_ESTABLECIMIENTOS))
     )
     combinado = combinar_con_establecimientos(
         df, df_establecimientos, col_join_respuestas=COLUMNA_INSTITUCION_RESPUESTAS
@@ -63,24 +85,72 @@ if (
     )
     st.plotly_chart(fig_resumen, width="stretch", key="grafico_resumen_ministerio")
 
-cols_select = columnas_categoricas(df)
-cols_input = columnas_texto_libre(df)
+    df_base = combinado
+else:
+    df_base = df
+
+cols_select = columnas_categoricas(df_base)
+cols_input = columnas_texto_libre(df_base)
 if not cols_select:
     st.warning("No encontré columnas de texto para agrupar en esta pestaña.")
-    st.dataframe(df.drop(columns=[c for c in df.columns if es_pii(c)], errors="ignore"))
+    st.dataframe(df_base.drop(columns=[c for c in df_base.columns if es_pii(c)], errors="ignore"))
     st.stop()
 
-st.sidebar.header("Filtros")
-df_filtrado = df.copy()
+df_base = rellenar_sin_dato(df_base, cols_select)
 
-for col in cols_select:
-    opciones = opciones_unicas(df[col])
-    seleccion = st.sidebar.multiselect(col, opciones, default=opciones)
+nombres_cascada = {col for col, _ in COLUMNAS_CASCADA_ESTABLECIMIENTO}
+cols_select_genericas = [c for c in cols_select if c not in nombres_cascada]
+opciones_completas_genericas = {col: opciones_unicas(df_base[col]) for col in cols_select_genericas}
+opciones_completas_cascada = (
+    {col: sorted(v for v in df_base[col].dropna().unique()) for col, _ in COLUMNAS_CASCADA_ESTABLECIMIENTO}
+    if hay_establecimientos
+    else {}
+)
+
+st.sidebar.header("Filtros")
+col_btn_todos, col_btn_limpiar = st.sidebar.columns(2)
+if col_btn_todos.button("Completar todos", width="stretch"):
+    for col in cols_select_genericas:
+        st.session_state[f"filtro_{col}"] = opciones_completas_genericas[col]
+    for col, _ in COLUMNAS_CASCADA_ESTABLECIMIENTO:
+        st.session_state[f"filtro_cascada_{col}"] = opciones_completas_cascada.get(col, [])
+    for col in cols_input:
+        st.session_state[f"busqueda_{col}"] = ""
+    st.rerun()
+if col_btn_limpiar.button("Limpiar todos", width="stretch"):
+    for col in cols_select_genericas:
+        st.session_state[f"filtro_{col}"] = []
+    for col, _ in COLUMNAS_CASCADA_ESTABLECIMIENTO:
+        st.session_state[f"filtro_cascada_{col}"] = []
+    for col in cols_input:
+        st.session_state[f"busqueda_{col}"] = ""
+    st.rerun()
+
+df_filtrado = df_base.copy()
+
+if hay_establecimientos:
+    st.sidebar.header("Filtro por establecimiento")
+    for columna, etiqueta in COLUMNAS_CASCADA_ESTABLECIMIENTO:
+        opciones_col = sorted(v for v in df_filtrado[columna].dropna().unique())
+        key = f"filtro_cascada_{columna}"
+        _sincronizar_seleccion(key, opciones_col)
+        seleccion_col = st.sidebar.multiselect(
+            etiqueta, opciones_col, default=opciones_col, key=key
+        )
+        if seleccion_col:
+            df_filtrado = df_filtrado[df_filtrado[columna].isin(seleccion_col)]
+
+st.sidebar.header("Otros filtros")
+for col in cols_select_genericas:
+    opciones = opciones_unicas(df_filtrado[col])
+    key = f"filtro_{col}"
+    _sincronizar_seleccion(key, opciones)
+    seleccion = st.sidebar.multiselect(col, opciones, default=opciones, key=key)
     if seleccion:
         df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
 
 for col in cols_input:
-    busqueda = st.sidebar.text_input(col)
+    busqueda = st.sidebar.text_input(col, key=f"busqueda_{col}")
     if busqueda:
         df_filtrado = df_filtrado[
             df_filtrado[col].astype(str).str.contains(busqueda, case=False, na=False)
@@ -114,9 +184,13 @@ with col_der:
     fig2 = px.pie(conteo2, names=dim2, values="cantidad", title=f"Por {dim2}")
     st.plotly_chart(fig2, width="stretch", key="grafico_dim2")
 
-visibles = [c for c in df_filtrado.columns if not es_pii(c)]
+visibles = list(df_filtrado.columns)
 st.subheader("Tabla de datos filtrados")
 st.dataframe(df_filtrado[visibles], width="stretch")
 
-csv = df_filtrado[visibles].to_csv(index=False).encode("utf-8")
+st.caption(
+    "El CSV descargable incluye columnas con datos personales "
+    "(Nombre y Apellido, DNI, Teléfono, Domicilio). Manejalo con cuidado."
+)
+csv = df_filtrado.to_csv(index=False).encode("utf-8")
 st.download_button("Descargar datos filtrados (CSV)", csv, "datos_filtrados.csv", "text/csv")

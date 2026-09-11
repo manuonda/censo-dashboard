@@ -17,6 +17,11 @@ PII_SUBSTRINGS = (
 # una buena candidata para un select/multiselect y pasa a filtrarse por texto libre.
 UMBRAL_CARDINALIDAD = 25
 
+# Etiqueta para celdas vacías (NaN) en columnas categóricas. Se unifica con
+# respuestas como "Se desconoce" para que las filas sin dato no queden
+# invisibles en los filtros y gráficos.
+ETIQUETA_SIN_DATO = "Se desconoce"
+
 
 def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     """Nombres de columna usables: sin NaN, vacíos ni Unnamed."""
@@ -37,6 +42,24 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
             vistos[nombre] = 1
         nombres.append(nombre)
     df.columns = nombres
+    return df
+
+
+def sanear_tipos_mixtos(df: pd.DataFrame) -> pd.DataFrame:
+    """Convierte a texto las columnas object que mezclan tipos (p. ej. DNI o
+    Teléfono con números y textos tipo "No tiene").
+
+    Son campos de texto libre en el formulario: pandas los deja como object
+    con Python int/float/str mezclados, y pyarrow no puede serializar eso
+    para mostrarlo en una tabla de Streamlit (ArrowTypeError/ArrowInvalid).
+    """
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+        tipos = {type(v) for v in df[col].dropna()}
+        if len(tipos) > 1:
+            df[col] = df[col].apply(lambda v: str(v) if pd.notna(v) else v)
     return df
 
 
@@ -76,6 +99,19 @@ def opciones_unicas(serie: pd.Series) -> list:
     return sorted(valores, key=lambda v: str(v))
 
 
+def rellenar_sin_dato(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
+    """Reemplaza NaN por ETIQUETA_SIN_DATO en las columnas dadas.
+
+    Sin esto, una fila con la celda vacía nunca matchea en un filtro
+    multiselect (NaN no es igual a ningún valor de la lista) ni aparece
+    como opción, aunque el usuario seleccione "Se desconoce" a mano.
+    """
+    df = df.copy()
+    for col in columnas:
+        df[col] = df[col].fillna(ETIQUETA_SIN_DATO)
+    return df
+
+
 def _clave_join(valor) -> str:
     """Normaliza un nombre de institución para cruzar hojas sin que rompan
     mayúsculas/minúsculas ni espacios de más."""
@@ -103,7 +139,10 @@ def combinar_con_establecimientos(
     der = df_establecimientos.copy()
     izq["_clave"] = izq[col_join_respuestas].map(_clave_join)
     der["_clave"] = der[col_join_establecimientos].map(_clave_join)
-    der = der.drop(columns=[col_join_establecimientos]).drop_duplicates(subset="_clave")
+    # Se conserva el nombre canónico de "Establecimiento" (a diferencia de
+    # col_join_respuestas, que puede venir con mayúsculas/espacios distintos)
+    # porque también se usa como filtro en pantalla.
+    der = der.drop_duplicates(subset="_clave")
 
     combinado = izq.merge(der, on="_clave", how="left")
     return combinado.drop(columns=["_clave"])

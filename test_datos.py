@@ -10,6 +10,7 @@ from datos import (
     es_pii,
     normalizar_columnas,
     resumen_por_ministerio,
+    sanear_tipos_mixtos,
 )
 
 
@@ -76,6 +77,26 @@ class TestColumnasCategoricas(unittest.TestCase):
         self.assertTrue(es_pii("Domicilio"))
         self.assertFalse(es_pii("Institución"))
         self.assertFalse(es_pii("Sector"))
+
+
+class TestSanearTiposMixtos(unittest.TestCase):
+    def test_columna_mixta_pasa_a_texto(self):
+        """DNI/Teléfono con números y texto ('No tiene') rompían la
+        serialización a Arrow; deben quedar todos como str."""
+        df = pd.DataFrame({"DNI": [30111222, "No tiene", 30111223]})
+        saneado = sanear_tipos_mixtos(df)
+        self.assertTrue(all(isinstance(v, str) for v in saneado["DNI"]))
+        self.assertEqual(saneado["DNI"].tolist(), ["30111222", "No tiene", "30111223"])
+
+    def test_columna_sin_mezcla_no_se_toca(self):
+        df = pd.DataFrame({"Sector": ["Público", "Privado"]})
+        saneado = sanear_tipos_mixtos(df)
+        self.assertEqual(saneado["Sector"].tolist(), ["Público", "Privado"])
+
+    def test_nan_se_preserva(self):
+        df = pd.DataFrame({"DNI": [30111222, "No tiene", float("nan")]})
+        saneado = sanear_tipos_mixtos(df)
+        self.assertTrue(pd.isna(saneado["DNI"].iloc[2]))
 
 
 class TestCruceEstablecimientos(unittest.TestCase):

@@ -9,3 +9,5 @@ __pycache__/
 .venvv/
 .agents/skills/developing-with-streamlit
 .claude/skills/developing-with-streamlit
+
+.atl/
