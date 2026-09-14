@@ -112,6 +112,19 @@ def rellenar_sin_dato(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
     return df
 
 
+def normalizar_dni(valor) -> str | None:
+    """Deja el DNI como solo dígitos para poder cruzar excels que lo tipean
+    distinto (con puntos, con espacios, como número o como texto).
+
+    Devuelve None si no queda ningún dígito (valor vacío o "No tiene"), para
+    que esos casos no matcheen entre sí como si fueran la misma persona.
+    """
+    if pd.isna(valor):
+        return None
+    digitos = "".join(c for c in str(valor) if c.isdigit())
+    return digitos or None
+
+
 def _clave_join(valor) -> str:
     """Normaliza un nombre de institución para cruzar hojas sin que rompan
     mayúsculas/minúsculas ni espacios de más."""
@@ -146,6 +159,46 @@ def combinar_con_establecimientos(
 
     combinado = izq.merge(der, on="_clave", how="left")
     return combinado.drop(columns=["_clave"])
+
+
+def combinar_con_equipo_tratante(
+    df_censo: pd.DataFrame,
+    df_equipo: pd.DataFrame,
+    col_dni_censo: str,
+    col_dni_equipo: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Cruza el censo con las respuestas de Equipo tratante por DNI,
+    agregando las columnas de Equipo tratante al final.
+
+    El DNI se normaliza (sin puntos/espacios) porque cada excel lo tipea
+    distinto. Un DNI vacío o "No tiene" nunca matchea, ni siquiera contra
+    otro "No tiene" (normalizar_dni los deja en None, y None no matchea con
+    None en un merge por clave).
+
+    Devuelve (combinado, sin_cruzar):
+    - combinado: todas las filas del censo, con las columnas de Equipo
+      tratante en NaN si no hubo match (no se pierde a nadie del censo).
+    - sin_cruzar: filas de Equipo tratante cuyo DNI no está en el censo,
+      para poder mostrarlas aparte como "no se pudieron cruzar".
+    """
+    izq = df_censo.copy()
+    der = df_equipo.copy()
+    izq["_dni"] = izq[col_dni_censo].map(normalizar_dni)
+    der["_dni"] = der[col_dni_equipo].map(normalizar_dni)
+
+    der_dedup = der[der["_dni"].notna()].drop_duplicates(subset="_dni", keep="first")
+
+    combinado = izq.merge(
+        der_dedup.drop(columns=[col_dni_equipo]), on="_dni", how="left"
+    ).drop(columns=["_dni"])
+
+    dnis_censo = set(izq["_dni"].dropna())
+    # Sin DNI válido (vacío/"No tiene") tampoco se pudo cruzar: no hay forma
+    # de saber a qué persona del censo corresponde.
+    matcheo = der["_dni"].notna() & der["_dni"].isin(dnis_censo)
+    sin_cruzar = der[~matcheo].drop(columns=["_dni"])
+
+    return combinado, sin_cruzar
 
 
 def resumen_por_ministerio(df_combinado: pd.DataFrame) -> pd.DataFrame:

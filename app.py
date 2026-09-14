@@ -5,6 +5,7 @@ import streamlit as st
 from datos import (
     columnas_categoricas,
     columnas_texto_libre,
+    combinar_con_equipo_tratante,
     combinar_con_establecimientos,
     es_pii,
     normalizar_columnas,
@@ -16,6 +17,8 @@ from datos import (
 
 COLUMNA_INSTITUCION_RESPUESTAS = "Nombre de la institucion2"
 HOJA_ESTABLECIMIENTOS = "Establecimientos"
+COLUMNA_DNI_CENSO = "4. Nº de Documento de Identidad"
+COLUMNA_DNI_EQUIPO = "DNI del paciente"
 # Orden del filtro en cascada: cada select acota las opciones del siguiente.
 COLUMNAS_CASCADA_ESTABLECIMIENTO = [
     ("Institucion", "Institución"),
@@ -25,13 +28,20 @@ COLUMNAS_CASCADA_ESTABLECIMIENTO = [
 ]
 
 
-def _sincronizar_seleccion(key: str, opciones_validas: list) -> None:
-    """Antes de crear el widget, saca del session_state los valores que ya
-    no están entre las opciones (por haber cambiado un filtro anterior en la
-    cascada, o por un "Completar todos" con opciones de otro alcance). Sin
-    esto, Streamlit tira error porque el valor guardado ya no pertenece a
-    las opciones nuevas."""
-    if key in st.session_state:
+def _preparar_multiselect(key: str, opciones_validas: list) -> None:
+    """Deja el session_state listo para crear un multiselect con ese `key`
+    sin pasarle `default` (evita el warning "created with a default value
+    but also had its value set via the Session State API").
+
+    - Si el key todavía no existe (primera vez), lo inicializa con todas
+      las opciones seleccionadas.
+    - Si ya existe, saca los valores que dejaron de pertenecer a las
+      opciones (por haber cambiado un filtro anterior en la cascada, o por
+      un "Completar todos" con opciones de otro alcance).
+    """
+    if key not in st.session_state:
+        st.session_state[key] = list(opciones_validas)
+    else:
         st.session_state[key] = [v for v in st.session_state[key] if v in opciones_validas]
 
 
@@ -40,11 +50,15 @@ st.set_page_config(page_title="Censo - Visualización", layout="wide")
 st.title("Visualización del censo")
 st.caption("Cargá el Excel, filtrá y mirá la distribución en gráficos de torta.")
 
-archivo = st.file_uploader("Subí el archivo Excel (.xlsx)", type=["xlsx"])
+archivo = st.file_uploader("1. Subí el Excel del censo (.xlsx)", type=["xlsx"])
 
 if archivo is None:
     st.info("Subí un archivo para empezar.")
     st.stop()
+
+archivo_equipo = st.file_uploader(
+    "2. Subí el Excel de Equipo tratante (.xlsx) — opcional", type=["xlsx"]
+)
 
 xl = pd.ExcelFile(archivo)
 hoja = (
@@ -88,6 +102,22 @@ if hay_establecimientos:
     df_base = combinado
 else:
     df_base = df
+
+sin_cruzar_equipo = None
+if archivo_equipo is not None and COLUMNA_DNI_CENSO in df_base.columns:
+    df_equipo = sanear_tipos_mixtos(
+        normalizar_columnas(pd.read_excel(archivo_equipo))
+    )
+    if COLUMNA_DNI_EQUIPO in df_equipo.columns:
+        df_base, sin_cruzar_equipo = combinar_con_equipo_tratante(
+            df_base,
+            df_equipo,
+            col_dni_censo=COLUMNA_DNI_CENSO,
+            col_dni_equipo=COLUMNA_DNI_EQUIPO,
+        )
+        st.success(f"Se cruzaron {len(df_equipo) - len(sin_cruzar_equipo)} de {len(df_equipo)} filas de Equipo tratante.")
+    else:
+        st.warning(f"El Excel de Equipo tratante no tiene la columna '{COLUMNA_DNI_EQUIPO}'.")
 
 cols_select = columnas_categoricas(df_base)
 cols_input = columnas_texto_libre(df_base)
@@ -133,10 +163,8 @@ if hay_establecimientos:
     for columna, etiqueta in COLUMNAS_CASCADA_ESTABLECIMIENTO:
         opciones_col = sorted(v for v in df_filtrado[columna].dropna().unique())
         key = f"filtro_cascada_{columna}"
-        _sincronizar_seleccion(key, opciones_col)
-        seleccion_col = st.sidebar.multiselect(
-            etiqueta, opciones_col, default=opciones_col, key=key
-        )
+        _preparar_multiselect(key, opciones_col)
+        seleccion_col = st.sidebar.multiselect(etiqueta, opciones_col, key=key)
         if seleccion_col:
             df_filtrado = df_filtrado[df_filtrado[columna].isin(seleccion_col)]
 
@@ -144,8 +172,8 @@ st.sidebar.header("Otros filtros")
 for col in cols_select_genericas:
     opciones = opciones_unicas(df_filtrado[col])
     key = f"filtro_{col}"
-    _sincronizar_seleccion(key, opciones)
-    seleccion = st.sidebar.multiselect(col, opciones, default=opciones, key=key)
+    _preparar_multiselect(key, opciones)
+    seleccion = st.sidebar.multiselect(col, opciones, key=key)
     if seleccion:
         df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
 
@@ -187,6 +215,14 @@ with col_der:
 visibles = list(df_filtrado.columns)
 st.subheader("Tabla de datos filtrados")
 st.dataframe(df_filtrado[visibles], width="stretch")
+
+if sin_cruzar_equipo is not None and not sin_cruzar_equipo.empty:
+    st.subheader("Equipo tratante sin cruzar")
+    st.caption(
+        f"{len(sin_cruzar_equipo)} fila(s) de Equipo tratante no se pudieron "
+        "cruzar: el DNI no está en el censo, o está vacío/'No tiene'."
+    )
+    st.dataframe(sin_cruzar_equipo, width="stretch")
 
 st.caption(
     "El CSV descargable incluye columnas con datos personales "

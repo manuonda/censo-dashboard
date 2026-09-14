@@ -7,8 +7,10 @@ from datos import (
     columnas_categoricas,
     columnas_texto_libre,
     combinar_con_establecimientos,
+    combinar_con_equipo_tratante,
     es_pii,
     normalizar_columnas,
+    normalizar_dni,
     resumen_por_ministerio,
     sanear_tipos_mixtos,
 )
@@ -99,6 +101,21 @@ class TestSanearTiposMixtos(unittest.TestCase):
         self.assertTrue(pd.isna(saneado["DNI"].iloc[2]))
 
 
+class TestNormalizarDni(unittest.TestCase):
+    def test_saca_puntos_y_espacios(self):
+        self.assertEqual(normalizar_dni("30.111.222"), "30111222")
+        self.assertEqual(normalizar_dni(" 30111222 "), "30111222")
+
+    def test_numero_se_convierte_a_string(self):
+        self.assertEqual(normalizar_dni(30111222), "30111222")
+
+    def test_no_tiene_devuelve_none(self):
+        self.assertIsNone(normalizar_dni("No tiene"))
+
+    def test_nan_devuelve_none(self):
+        self.assertIsNone(normalizar_dni(float("nan")))
+
+
 class TestCruceEstablecimientos(unittest.TestCase):
     def setUp(self):
         self.establecimientos = pd.DataFrame(
@@ -181,6 +198,120 @@ class TestCruceEstablecimientos(unittest.TestCase):
         self.assertEqual(fila_privado["cantidad"].iloc[0], 1)
 
         self.assertEqual(resumen["cantidad"].sum(), 4)
+
+
+class TestCruceEquipoTratante(unittest.TestCase):
+    def setUp(self):
+        self.censo = pd.DataFrame(
+            {
+                "4. Nº de Documento de Identidad": [30111222, 40222333],
+                "5. Sexo": ["Mujer", "Hombre"],
+            }
+        )
+        self.equipo = pd.DataFrame(
+            {
+                "DNI del paciente": ["30.111.222", "40.222.333"],
+                "35. ¿Qué tipo de internación/ingreso realizo el equipo?": [
+                    "Judicial",
+                    "Voluntaria",
+                ],
+            }
+        )
+
+    def test_cruza_por_dni_normalizado_y_agrega_columnas_al_final(self):
+        combinado, sin_cruzar = combinar_con_equipo_tratante(
+            self.censo,
+            self.equipo,
+            col_dni_censo="4. Nº de Documento de Identidad",
+            col_dni_equipo="DNI del paciente",
+        )
+        self.assertEqual(list(combinado.columns)[:2], list(self.censo.columns))
+        self.assertEqual(
+            combinado["35. ¿Qué tipo de internación/ingreso realizo el equipo?"].tolist(),
+            ["Judicial", "Voluntaria"],
+        )
+        self.assertTrue(sin_cruzar.empty)
+
+    def test_persona_del_censo_sin_equipo_tratante_no_se_pierde(self):
+        censo = pd.DataFrame(
+            {
+                "4. Nº de Documento de Identidad": [30111222, 99999999],
+                "5. Sexo": ["Mujer", "Hombre"],
+            }
+        )
+        combinado, _ = combinar_con_equipo_tratante(
+            censo,
+            self.equipo,
+            col_dni_censo="4. Nº de Documento de Identidad",
+            col_dni_equipo="DNI del paciente",
+        )
+        self.assertEqual(len(combinado), 2)
+        col_equipo = "35. ¿Qué tipo de internación/ingreso realizo el equipo?"
+        self.assertTrue(pd.isna(combinado[col_equipo].iloc[1]))
+
+    def test_dni_duplicado_en_equipo_se_queda_con_el_primero(self):
+        equipo_duplicado = pd.DataFrame(
+            {
+                "DNI del paciente": ["30.111.222", "30.111.222"],
+                "35. ¿Qué tipo de internación/ingreso realizo el equipo?": [
+                    "Judicial",
+                    "Voluntaria",
+                ],
+            }
+        )
+        combinado, _ = combinar_con_equipo_tratante(
+            self.censo,
+            equipo_duplicado,
+            col_dni_censo="4. Nº de Documento de Identidad",
+            col_dni_equipo="DNI del paciente",
+        )
+        self.assertEqual(len(combinado), 2)
+        self.assertEqual(
+            combinado["35. ¿Qué tipo de internación/ingreso realizo el equipo?"].iloc[0],
+            "Judicial",
+        )
+
+    def test_dni_de_equipo_que_no_esta_en_el_censo_va_a_sin_cruzar(self):
+        equipo = pd.DataFrame(
+            {
+                "DNI del paciente": ["30.111.222", "55.555.555"],
+                "35. ¿Qué tipo de internación/ingreso realizo el equipo?": [
+                    "Judicial",
+                    "Voluntaria",
+                ],
+            }
+        )
+        _, sin_cruzar = combinar_con_equipo_tratante(
+            self.censo,
+            equipo,
+            col_dni_censo="4. Nº de Documento de Identidad",
+            col_dni_equipo="DNI del paciente",
+        )
+        self.assertEqual(len(sin_cruzar), 1)
+        self.assertEqual(sin_cruzar["DNI del paciente"].iloc[0], "55.555.555")
+
+    def test_dni_no_tiene_no_matchea_entre_si(self):
+        censo = pd.DataFrame(
+            {
+                "4. Nº de Documento de Identidad": ["No tiene"],
+                "5. Sexo": ["Mujer"],
+            }
+        )
+        equipo = pd.DataFrame(
+            {
+                "DNI del paciente": ["No tiene"],
+                "35. ¿Qué tipo de internación/ingreso realizo el equipo?": ["Judicial"],
+            }
+        )
+        combinado, sin_cruzar = combinar_con_equipo_tratante(
+            censo,
+            equipo,
+            col_dni_censo="4. Nº de Documento de Identidad",
+            col_dni_equipo="DNI del paciente",
+        )
+        col_equipo = "35. ¿Qué tipo de internación/ingreso realizo el equipo?"
+        self.assertTrue(pd.isna(combinado[col_equipo].iloc[0]))
+        self.assertEqual(len(sin_cruzar), 1)
 
 
 if __name__ == "__main__":
