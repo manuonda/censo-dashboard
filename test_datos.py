@@ -5,6 +5,7 @@ import pandas as pd
 
 from datos import (
     columnas_categoricas,
+    columnas_numericas,
     columnas_texto_libre,
     combinar_con_establecimientos,
     combinar_con_equipo_tratante,
@@ -99,6 +100,31 @@ class TestSanearTiposMixtos(unittest.TestCase):
         df = pd.DataFrame({"DNI": [30111222, "No tiene", float("nan")]})
         saneado = sanear_tipos_mixtos(df)
         self.assertTrue(pd.isna(saneado["DNI"].iloc[2]))
+
+
+class TestColumnasNumericas(unittest.TestCase):
+    def test_detecta_columna_numerica(self):
+        df = pd.DataFrame({"2. Edad": [30, 45, 60], "Sector": ["Público"] * 3})
+        self.assertEqual(columnas_numericas(df), ["2. Edad"])
+
+    def test_no_incluye_columnas_de_texto(self):
+        df = pd.DataFrame({"Sector": ["Público", "Privado"]})
+        self.assertEqual(columnas_numericas(df), [])
+
+    def test_excluye_pii_aunque_sea_numerica(self):
+        df = pd.DataFrame({"Nº de Documento de Identidad": [30111222, 30111223]})
+        self.assertEqual(columnas_numericas(df), [])
+
+    def test_admite_floats_con_nan(self):
+        df = pd.DataFrame({"2. Edad": [30.0, float("nan"), 60.0]})
+        self.assertEqual(columnas_numericas(df), ["2. Edad"])
+
+    def test_excluye_columna_numeracion(self):
+        """La hoja Establecimientos trae una columna '#' de numeración
+        correlativa (1, 2, 3...); es numérica pero no es un dato del censo,
+        no tiene sentido como filtro."""
+        df = pd.DataFrame({"#": [1, 2, 3], "2. Edad": [30, 45, 60]})
+        self.assertEqual(columnas_numericas(df), ["2. Edad"])
 
 
 class TestNormalizarDni(unittest.TestCase):

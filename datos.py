@@ -85,6 +85,23 @@ def columnas_categoricas(df: pd.DataFrame, umbral: int = UMBRAL_CARDINALIDAD) ->
     ]
 
 
+def columnas_numericas(df: pd.DataFrame) -> list[str]:
+    """Columnas numéricas, no PII: candidatas a filtro de rango (slider).
+
+    Ej.: "2. Edad". El DNI también es numérico en el Excel pero se excluye
+    por PII, igual que en columnas_categoricas/columnas_texto_libre. La "#"
+    de Establecimientos también se excluye: es la numeración correlativa de
+    la fila, no un dato del censo.
+    """
+    return [
+        c
+        for c in df.columns
+        if str(c).strip() != "#"
+        and not es_pii(c)
+        and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+
 def columnas_texto_libre(df: pd.DataFrame, umbral: int = UMBRAL_CARDINALIDAD) -> list[str]:
     """Columnas de texto, no PII, con muchos valores únicos: candidatas a input de búsqueda."""
     return [

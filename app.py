@@ -4,6 +4,7 @@ import streamlit as st
 
 from datos import (
     columnas_categoricas,
+    columnas_numericas,
     columnas_texto_libre,
     combinar_con_equipo_tratante,
     combinar_con_establecimientos,
@@ -43,6 +44,21 @@ def _preparar_multiselect(key: str, opciones_validas: list) -> None:
         st.session_state[key] = list(opciones_validas)
     else:
         st.session_state[key] = [v for v in st.session_state[key] if v in opciones_validas]
+
+
+def _preparar_slider(key: str, minimo: int, maximo: int) -> None:
+    """Mismo problema que _preparar_multiselect pero para un slider de rango:
+    inicializa el session_state la primera vez, y si ya existe lo recorta
+    para que siga dentro de [minimo, maximo] (evita el warning y errores si
+    el rango disponible cambió por otro filtro)."""
+    if key not in st.session_state:
+        st.session_state[key] = (minimo, maximo)
+        return
+    lo, hi = st.session_state[key]
+    lo, hi = max(lo, minimo), min(hi, maximo)
+    if lo > hi:
+        lo, hi = minimo, maximo
+    st.session_state[key] = (lo, hi)
 
 
 st.set_page_config(page_title="Censo - Visualización", layout="wide")
@@ -137,6 +153,18 @@ opciones_completas_cascada = (
     else {}
 )
 
+# Columnas numéricas con al menos 2 valores distintos (con min == max el
+# slider no tiene sentido y Streamlit tira error).
+rangos_completos = {}
+for col in columnas_numericas(df_base):
+    serie = df_base[col].dropna()
+    if serie.empty:
+        continue
+    minimo, maximo = int(serie.min()), int(serie.max())
+    if minimo < maximo:
+        rangos_completos[col] = (minimo, maximo)
+cols_numericas = list(rangos_completos)
+
 st.sidebar.header("Filtros")
 col_btn_todos, col_btn_limpiar = st.sidebar.columns(2)
 if col_btn_todos.button("Completar todos", width="stretch"):
@@ -146,6 +174,8 @@ if col_btn_todos.button("Completar todos", width="stretch"):
         st.session_state[f"filtro_cascada_{col}"] = opciones_completas_cascada.get(col, [])
     for col in cols_input:
         st.session_state[f"busqueda_{col}"] = ""
+    for col in cols_numericas:
+        st.session_state[f"filtro_num_{col}"] = rangos_completos[col]
     st.rerun()
 if col_btn_limpiar.button("Limpiar todos", width="stretch"):
     for col in cols_select_genericas:
@@ -154,6 +184,10 @@ if col_btn_limpiar.button("Limpiar todos", width="stretch"):
         st.session_state[f"filtro_cascada_{col}"] = []
     for col in cols_input:
         st.session_state[f"busqueda_{col}"] = ""
+    # Un slider de rango no tiene un equivalente de "sin selección": limpiar
+    # equivale a no restringir, es decir, dejarlo en el rango completo.
+    for col in cols_numericas:
+        st.session_state[f"filtro_num_{col}"] = rangos_completos[col]
     st.rerun()
 
 df_filtrado = df_base.copy()
@@ -176,6 +210,17 @@ for col in cols_select_genericas:
     seleccion = st.sidebar.multiselect(col, opciones, key=key)
     if seleccion:
         df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
+
+if cols_numericas:
+    st.sidebar.header("Filtros numéricos")
+    for col in cols_numericas:
+        minimo, maximo = rangos_completos[col]
+        key = f"filtro_num_{col}"
+        _preparar_slider(key, minimo, maximo)
+        lo, hi = st.sidebar.slider(col, minimo, maximo, key=key)
+        # Las filas sin dato en esta columna no se ocultan por el rango: no
+        # sabemos su valor, así que no corresponde excluirlas por edad.
+        df_filtrado = df_filtrado[df_filtrado[col].between(lo, hi) | df_filtrado[col].isna()]
 
 for col in cols_input:
     busqueda = st.sidebar.text_input(col, key=f"busqueda_{col}")
